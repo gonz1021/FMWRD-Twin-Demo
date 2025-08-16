@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<title>Digital Twin Demo — Single File</title>
+<meta name="theme-color" content="#0f172a">
+<style>
+  :root{
+    --ink:#0f172a; --ink2:#334155; --bg:#0b1220; --card:#0f172a; --muted:#94a3b8;
+    --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --grid:#1f2937;
+  }
+  *{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+  body{ margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:#fff; }
+  header{ padding:14px; background:#0f172a; position:sticky; top:0; z-index:3; display:flex; gap:10px; align-items:center; justify-content:space-between; }
+  header h1{ font-size:16px; margin:0; font-weight:800; }
+  .badge{ display:inline-block; padding:2px 8px; border-radius:999px; background:#172554; margin-left:8px; font-size:12px; }
+  .wrap{ display:grid; grid-template-columns:1fr; gap:12px; padding:12px; }
+  @media (min-width: 900px){ .wrap{ grid-template-columns: 1.4fr 1fr; } }
+  .card{ background:var(--card); border:1px solid var(--grid); border-radius:12px; padding:12px; }
+  .title{ margin:0 0 8px 0; font-weight:800; font-size:16px; }
+  .toolbar{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  button, select, input[type=range], input[type=file]{ font-size:14px; padding:10px 12px; border-radius:10px; border:1px solid var(--ink2); background:#111827; color:#fff; }
+  button.primary{ background:#2563eb; border-color:#1d4ed8; }
+  button:disabled{ opacity:.5; }
+  .mapBox{ position:relative; height:64vh; min-height:360px; border-radius:12px; overflow:hidden; background:#0b1220; border:1px solid var(--grid); }
+  #imgBase{ position:absolute; inset:0; background-size:contain; background-position:center; background-repeat:no-repeat; opacity:.95; }
+  .station{ position:absolute; width:32px; height:32px; border-radius:50%; border:2px solid #fff; display:flex; align-items:center; justify-content:center; background:#22c55e; color:#000; font-weight:800; cursor:pointer; touch-action:none; }
+  .station.selected{ box-shadow:0 0 0 4px rgba(59,130,246,.4); }
+  .note{ font-size:12px; color:var(--muted); }
+  .kpi{ font-size:14px; line-height:1.5; white-space:pre-line; color:#e5e7eb; }
+  .grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width: 600px){ .grid-2{ grid-template-columns:1fr; } }
+  canvas{ width:100%; height:220px; border:1px solid var(--grid); border-radius:8px; background:#0b1220; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Digital Twin Demo<span id="clock" class="badge">t = 0.00 h</span></h1>
+  <div class="toolbar">
+    <button id="play" class="primary">▶</button>
+    <button id="pause">⏸</button>
+    <button id="restart">⟲</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h3 class="title">Basemap + Stations (drag on desktop/touch on mobile)</h3>
+    <div class="toolbar" style="margin-bottom:8px;">
+      <label class="note">Load PNG/JPG basemap: <input id="imgLoader" type="file" accept=".png,.jpg,.jpeg"></label>
+      <label class="note">Scenario:
+        <select id="scenario">
+          <option value="dry">Dry</option>
+          <option value="moderate" selected>Moderate</option>
+          <option value="extreme">Extreme</option>
+        </select>
+      </label>
+      <label class="note">Time
+        <input id="slider" type="range" min="0" max="48" step="1" value="0" style="width:40vw; max-width:320px">
+      </label>
+      <span id="timeLabel" class="note">0 / 48</span>
+      <label class="note">Speed
+        <select id="speed">
+          <option value="400">1×</option>
+          <option value="250">1.5×</option>
+          <option value="150">2×</option>
+          <option value="80">4×</option>
+        </select>
+      </label>
+      <button id="export">⬇ Layout</button>
+      <label class="note">Import <input id="import" type="file" accept=".json"></label>
+    </div>
+    <div class="mapBox" id="map">
+      <div id="imgBase"></div>
+      <!-- stations injected here -->
+    </div>
+  </div>
+
+  <div class="card">
+    <h3 class="title">Telemetry & Charts</h3>
+    <div class="grid-2">
+      <div>
+        <canvas id="rain"></canvas>
+        <div class="note">Rainfall (in/hr)</div>
+      </div>
+      <div>
+        <canvas id="wetwell"></canvas>
+        <div class="note">Wet-well (ft) & Amps (overlay)</div>
+      </div>
+    </div>
+    <div id="telemetry" class="kpi" style="margin-top:8px;">Tap/click a station (P1–P12).</div>
+  </div>
+
+  <div class="card">
+    <h3 class="title">Control Suggestions</h3>
+    <div id="advice" class="kpi">Choose a scenario and press ▶.</div>
+  </div>
+</div>
+
+<script>
+/* ---------- Canvas plotting ---------- */
+function fitCanvas(c){
+  const rect = c.getBoundingClientRect();
+  const ratio = window.devicePixelRatio||1;
+  c.width = Math.max(300, Math.floor(rect.width*ratio));
+  c.height = Math.max(180, Math.floor(rect.height*ratio));
+}
+function plotDual(canvas, s1, ymin1, ymax1, s2, ymin2, ymax2){
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const L=40, R=28, T=10, B=26;
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(L, T); ctx.lineTo(L, h-B); ctx.lineTo(w-R, h-B); ctx.stroke();
+  ctx.fillStyle = '#94a3b8'; ctx.font = Math.max(12, Math.floor(12*(w/600)))+'px system-ui';
+  for (let i=0;i<=4;i++){
+    const y = h-B - (h-B-T)*i/4;
+    const val = (ymin1 + (ymax1-ymin1)*i/4).toFixed(2);
+    ctx.fillText(val, 6, y+4);
+    ctx.strokeStyle='rgba(255,255,255,0.06)'; ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(w-R, y); ctx.stroke();
+  }
+  ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 2; ctx.beginPath();
+  const n = s1.length;
+  for (let i=0;i<n;i++){
+    const x = L + (w-L-R)*i/(n-1);
+    const y = h-B - (h-B-T)*(s1[i]-ymin1)/(ymax1-ymin1 || 1);
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  } ctx.stroke();
+  ctx.strokeStyle = '#7c3aed'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i=0;i<n;i++){
+    const x = L + (w-L-R)*i/(n-1);
+    const y = h-B - (h-B-T)*(s2[i]-ymin2)/(ymax2-ymin2 || 1);
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  } ctx.stroke();
+  ctx.fillStyle = '#94a3b8';
+  for (let i=0;i<=4;i++){
+    const y = h-B - (h-B-T)*i/4;
+    const val = (ymin2 + (ymax2-ymin2)*i/4).toFixed(0);
+    ctx.fillText(val, w-R+4, y+4);
+  }
+}
+function plotLine(canvas, series, ymin, ymax){
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  const L=40, R=10, T=10, B=24;
+  ctx.clearRect(0,0,w,h);
+  ctx.strokeStyle = '#334155'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(L, T); ctx.lineTo(L, h-B); ctx.lineTo(w-R, h-B); ctx.stroke();
+  ctx.fillStyle = '#94a3b8'; ctx.font = Math.max(12, Math.floor(12*(w/600)))+'px system-ui';
+  for (let i=0;i<=4;i++){
+    const y = h-B - (h-B-T)*i/4;
+    const val = (ymin + (ymax-ymin)*i/4).toFixed(2);
+    ctx.fillText(val, 6, y+4);
+    ctx.strokeStyle='rgba(255,255,255,0.06)'; ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(w-R, y); ctx.stroke();
+  }
+  ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  const n = series.length;
+  for (let i=0;i<n;i++){
+    const x = L + (w-L-R)*i/(n-1);
+    const y = h-B - (h-B-T)*(series[i]-ymin)/(ymax-ymin || 1);
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  } ctx.stroke();
+}
+
+/* ---------- Scenarios & data ---------- */
+const steps=49;
+const timeHrs = Array.from({length:steps}, (_,i)=> i*0.25);
+function gaussian(x, mu, s){ return Math.exp(-0.5*((x-mu)/s)**2); }
+function scenarioRain(s){
+  if(s==='dry')      return timeHrs.map(t=>0);
+  if(s==='moderate') return timeHrs.map(t=> 0.8*gaussian(t, 6, 1.2));
+  if(s==='extreme')  return timeHrs.map(t=> 1.2*gaussian(t, 5.8, 1.0) + 0.6*gaussian(t, 8.5, 0.5));
+  return timeHrs.map(t=>0);
+}
+
+let stations=[
+  {id:"P1",  x:.12, y:.18, basin:"A"},
+  {id:"P2",  x:.28, y:.12, basin:"A"},
+  {id:"P3",  x:.45, y:.20, basin:"A"},
+  {id:"P4",  x:.60, y:.28, basin:"B"},
+  {id:"P5",  x:.78, y:.34, basin:"B"},
+  {id:"P6",  x:.84, y:.52, basin:"B"},
+  {id:"P7",  x:.70, y:.62, basin:"C"},
+  {id:"P8",  x:.54, y:.70, basin:"C"},
+  {id:"P9",  x:.36, y:.64, basin:"C"},
+  {id:"P10", x:.20, y:.70, basin:"D"},
+  {id:"P11", x:.12, y:.50, basin:"D"},
+  {id:"P12", x:.26, y:.40, basin:"D"}
+];
+
+const basinPhase = {A:0, B:3, C:6, D:9};
+function makeData(rain){
+  function riskSeries(phase){
+    return timeHrs.map((t,i)=>{
+      const prev = (i>phase? rain[i-phase]: 0);
+      return Math.max(0, Math.min(1, 1.4*rain[i] + 1.1*prev));
+    });
+  }
+  const risk={}, wet={}, amp={};
+  stations.forEach(s=>{
+    risk[s.id] = riskSeries(basinPhase[s.basin]);
+    wet[s.id]  = timeHrs.map((t,i)=> 4 + 1.5*Math.sin((t-6)/1.8)*Math.exp(-0.08*(t-6)**2) + (0.10*(Math.random()-0.5)));
+    amp[s.id]  = timeHrs.map((t,i)=> 18 + 12*risk[s.id][i] + (Math.random()-0.5)*1.0);
+  });
+  return {risk, wet, amp};
+}
+
+/* ---------- DOM ---------- */
+const map = document.getElementById('map');
+const imgBase = document.getElementById('imgBase');
+const imgLoader = document.getElementById('imgLoader');
+const playBtn = document.getElementById('play');
+const pauseBtn = document.getElementById('pause');
+const restartBtn = document.getElementById('restart');
+const scenarioSel = document.getElementById('scenario');
+const slider = document.getElementById('slider');
+const speedSel = document.getElementById('speed');
+const timeLabel = document.getElementById('timeLabel');
+const clock = document.getElementById('clock');
+const exportBtn = document.getElementById('export');
+const importInp = document.getElementById('import');
+const canvRain = document.getElementById('rain');
+const canvWet = document.getElementById('wetwell');
+[canvRain,canvWet].forEach(fitCanvas);
+window.addEventListener('resize', ()=>[canvRain,canvWet].forEach(fitCanvas));
+
+let scenario='moderate', rain=scenarioRain(scenario), data=makeData(rain), step=0, selected='P1', timer=null, speed=parseInt(speedSel.value,10);
+
+/* ---------- Map & markers (mouse + touch) ---------- */
+const stationEls = {};
+function colorForRisk(r){ if(r>=0.7) return 'var(--bad)'; if(r>=0.35) return 'var(--warn)'; return 'var(--ok)'; }
+function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+function pxToPctX(x){ return x / map.clientWidth; }
+function pxToPctY(y){ return y / map.clientHeight; }
+
+function placeStations(){
+  Array.from(map.querySelectorAll('.station')).forEach(n=>n.remove());
+  stations.forEach(s=>{
+    const el = document.createElement('div');
+    el.className = 'station';
+    el.style.left = `calc(${s.x*100}% - 16px)`;
+    el.style.top  = `calc(${s.y*100}% - 16px)`;
+    el.textContent = s.id.replace('P','');
+    el.addEventListener('click', ()=> selectStation(s.id));
+    // Pointer support
+    let dragging=false, offX=0, offY=0;
+    function startDrag(clientX, clientY){
+      dragging = true; Object.values(stationEls).forEach(e=>e.classList.remove('selected')); el.classList.add('selected');
+      const rect = el.getBoundingClientRect();
+      offX = clientX - rect.left; offY = clientY - rect.top;
+    }
+    function moveDrag(clientX, clientY){
+      if(!dragging) return;
+      const rect = map.getBoundingClientRect();
+      let x = clamp(clientX - rect.left - offX + 16, 16, map.clientWidth - 16);
+      let y = clamp(clientY - rect.top  - offY + 16, 16, map.clientHeight - 16);
+      el.style.left = `${x-16}px`; el.style.top = `${y-16}px`;
+      s.x = pxToPctX(x); s.y = pxToPctY(y);
+    }
+    function endDrag(){ dragging=false; }
+    // Mouse
+    el.addEventListener('mousedown', e=>{ startDrag(e.clientX, e.clientY); e.preventDefault(); });
+    window.addEventListener('mousemove', e=> moveDrag(e.clientX, e.clientY));
+    window.addEventListener('mouseup', endDrag);
+    // Touch
+    el.addEventListener('touchstart', e=>{ const t=e.changedTouches[0]; startDrag(t.clientX, t.clientY); });
+    window.addEventListener('touchmove', e=>{ if(!dragging) return; const t=e.changedTouches[0]; moveDrag(t.clientX, t.clientY); }, {passive:false});
+    window.addEventListener('touchend', endDrag);
+    map.appendChild(el); stationEls[s.id]=el;
+  });
+}
+
+/* ---------- Load basemap image ---------- */
+imgLoader.addEventListener('change', e=>{
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader(); r.onload = ev => { imgBase.style.backgroundImage = `url(${ev.target.result})`; };
+  r.readAsDataURL(f);
+});
+
+/* ---------- Updates ---------- */
+function selectStation(id){
+  selected = id;
+  Object.values(stationEls).forEach(el=> el.classList.remove('selected'));
+  stationEls[id].classList.add('selected');
+  update(step);
+}
+function update(idx){
+  timeLabel.textContent = idx + " / " + (steps-1);
+  clock.textContent = "t = " + (timeHrs[idx]).toFixed(2) + " h";
+  // station colors
+  stations.forEach(s=>{
+    const r = data.risk[s.id][idx];
+    const el = stationEls[s.id];
+    el.style.background = colorForRisk(r);
+  });
+  // charts & telemetry
+  plotLine(canvRain, rain.slice(0, idx+1), 0, Math.max(...rain)*1.1 || 1);
+  const wet = data.wet[selected], amp=data.amp[selected];
+  plotDual(canvWet, wet.slice(0, idx+1), 3.4, 6.8, amp.slice(0, idx+1),
+           Math.min(...amp)-2, Math.max(...amp)+2);
+  const s = stations.find(x=>x.id===selected);
+  document.getElementById('telemetry').textContent =
+    `${selected} (Basin ${s.basin})
+Wet-well Level: ${wet[idx].toFixed(2)} ft
+Pump Amps: ${amp[idx].toFixed(1)} A
+SSO Risk: ${data.risk[selected][idx].toFixed(2)}`;
+
+  // advice
+  const high = stations.filter(s => data.risk[s.id][idx] >= 0.7).length;
+  const med  = stations.filter(s => data.risk[s.id][idx] >= 0.35 && data.risk[s.id][idx] < 0.7).length;
+  const adviceEl = document.getElementById('advice');
+  if (high >= 3){
+    adviceEl.textContent = `High network risk (${high} stations ≥ 0.7).
+• Lower upstream wet-well setpoints by 0.5 ft
+• Open cross-link regulator R3 by 10%
+• Dispatch vacuum truck to Basin C`;
+  } else if (med >= 4){
+    adviceEl.textContent = `Moderate network risk (${med} stations 0.35–0.7).
+• Pre-emptive pumpdown at P4, P6
+• Verify standby pumps & generator checks`;
+  } else {
+    adviceEl.textContent = "Normal conditions. Maintain baseline setpoints.";
+  }
+}
+
+/* ---------- Playback ---------- */
+let playing=false, timer=null;
+function play(){
+  if (playing) return;
+  playing=true; playBtn.disabled=true; pauseBtn.disabled=false;
+  timer=setInterval(()=>{
+    if(step>=steps-1){ pause(); return; }
+    step++; slider.value = step; update(step);
+  }, speed);
+}
+function pause(){ playing=false; playBtn.disabled=false; pauseBtn.disabled=true; if(timer){ clearInterval(timer); timer=null; } }
+function restart(){ pause(); step=0; slider.value=0; update(0); }
+
+/* ---------- Import/Export ---------- */
+exportBtn.addEventListener('click', ()=>{
+  const json = JSON.stringify(stations, null, 2);
+  const blob = new Blob([json], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='station_layout.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+importInp.addEventListener('change', e=>{
+  const f=e.target.files[0]; if(!f) return; const r=new FileReader();
+  r.onload = ev => { try{ stations = JSON.parse(ev.target.result); placeStations(); update(step); } catch(e){ alert('Invalid JSON'); } };
+  r.readAsText(f);
+});
+
+/* ---------- Wiring ---------- */
+const playBtn = document.getElementById('play');
+const pauseBtn = document.getElementById('pause');
+const restartBtn = document.getElementById('restart');
+const speedSel = document.getElementById('speed');
+const scenarioSel = document.getElementById('scenario');
+const slider = document.getElementById('slider');
+const timeLabel = document.getElementById('timeLabel');
+const clock = document.getElementById('clock');
+const exportBtn = document.getElementById('export');
+const importInp = document.getElementById('import');
+const canvRain = document.getElementById('rain');
+const canvWet = document.getElementById('wetwell');
+
+playBtn.addEventListener('click', play);
+pauseBtn.addEventListener('click', pause);
+restartBtn.addEventListener('click', restart);
+let speed = parseInt(speedSel.value,10);
+speedSel.addEventListener('change', ()=>{ speed = parseInt(speedSel.value,10); if(playing){ pause(); play(); } });
+scenarioSel.addEventListener('change', ()=>{ const rainNew=scenarioRain(scenarioSel.value); const dataNew=makeData(rainNew); rain=rainNew; data=dataNew; slider.value=0; step=0; update(0); });
+slider.addEventListener('input', e=>{ step=parseInt(e.target.value,10); update(step); });
+[canvRain,canvWet].forEach(fitCanvas);
+window.addEventListener('resize', ()=>[canvRain,canvWet].forEach(fitCanvas));
+
+/* ---------- Init ---------- */
+function placeAndInit(){
+  placeStations();
+  [canvRain,canvWet].forEach(fitCanvas);
+  update(0);
+  selectStation('P1');
+}
+placeAndInit();
+</script>
+</body>
+</html>
