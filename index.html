@@ -101,11 +101,11 @@
 
 <script>
 /* ===================== CONFIG ===================== */
-// Set your basemap here.
-// Example: a raw GitHub URL to a PNG/JPG you committed to the repo root.
-// e.g., const BASEMAP_URL = "https://raw.githubusercontent.com/<you>/digital-twin-demo/main/foxmetro.png";
-const BASEMAP_URL = "https://upload.wikimedia.org/wikipedia/commons/6/6e/Illinois_location_map.svg";
-// If you want to embed a data URL, replace with: const BASEMAP_URL = "data:image/png;base64,....";
+// Preferred: keep basemap.png in the repo root next to index.html
+const BASEMAP_URL = "./basemap.png";
+
+// Fallback (only used if basemap.png not found) — harmless placeholder
+const FALLBACK_URL = "https://upload.wikimedia.org/wikipedia/commons/6/6e/Illinois_location_map.svg";
 
 /* ===================== UTIL: Canvas plotting ===================== */
 function fitCanvas(c){
@@ -213,8 +213,23 @@ let scenario='moderate', rain=scenarioRain(scenario), data=makeData(rain);
 let step=0, selected='P1', timer=null, playing=false;
 let speed = parseInt(speedSel.value,10);
 
-/* ===================== Basemap ===================== */
-imgBase.style.backgroundImage = `url('${BASEMAP_URL}')`;
+/* ===================== Basemap loader with error handling ===================== */
+(function loadBasemap(){
+  const test = new Image();
+  test.onload = () => { imgBase.style.backgroundImage = `url('${BASEMAP_URL}')`; };
+  test.onerror = () => {
+    // fallback attempt
+    const fb = new Image();
+    fb.onload = () => {
+      imgBase.style.backgroundImage = `url('${FALLBACK_URL}')`;
+      console.warn("Basemap not found at", BASEMAP_URL, "— using fallback.");
+      alert("Basemap not found (looking for basemap.png).\nUploaded it next to index.html, then refresh.");
+    };
+    fb.onerror = () => alert("Basemap failed to load. Check filename or URL.");
+    fb.src = FALLBACK_URL;
+  };
+  test.src = BASEMAP_URL;
+})();
 
 /* ===================== Data Fabrication ===================== */
 function makeData(rain){
@@ -316,7 +331,7 @@ Wet-well Level: ${wet[idx].toFixed(2)} ft
 Pump Amps: ${amp[idx].toFixed(1)} A
 SSO Risk: ${data.risk[selected][idx].toFixed(2)}`;
 
-  // simple rule-based advice
+  // rule-based advice
   const high = stations.filter(s => data.risk[s.id][idx] >= 0.7).length;
   const med  = stations.filter(s => data.risk[s.id][idx] >= 0.35 && data.risk[s.id][idx] < 0.7).length;
   const adviceEl = document.getElementById('advice');
@@ -361,10 +376,8 @@ document.getElementById('import').addEventListener('change', e=>{
   const f=e.target.files[0]; if(!f) return; const r=new FileReader();
   r.onload = ev => { try{
       const arr = JSON.parse(ev.target.result);
-      // Support either a plain array or an object with {stations:[...]}
       const next = Array.isArray(arr) ? arr : (arr.stations || []);
       if (!Array.isArray(next) || next.length===0) { alert('No stations found in JSON'); return; }
-      // merge by id
       next.forEach(o=>{
         const s = stations.find(z=>z.id===o.id);
         if(s){ s.x=o.x ?? s.x; s.y=o.y ?? s.y; if(o.basin) s.basin=o.basin; }
@@ -391,6 +404,13 @@ function init(){
   update(0);
   selectStation('P1');
 }
+function selectStation(id){
+  selected = id;
+  Object.values(stationEls).forEach(el=> el.classList.remove('selected'));
+  stationEls[id].classList.add('selected');
+  update(step);
+}
+let selected='P1';
 init();
 </script>
 </body>
