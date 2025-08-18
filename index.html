@@ -1,33 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
-<title>Fox Metro — Digital Twin</title>
-<meta name="theme-color" content="#0f172a">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Fox Metro — Digital Twin (Zoomable Basemap)</title>
+<meta name="theme-color" content="#0f172a" />
 <style>
   :root{
-    --ink:#0f172a; --bg:#0b1220; --card:#0f172a; --muted:#94a3b8;
-    --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; --grid:#1f2937;
+    --bg:#0b1220; --panel:#0f172a; --grid:#1f2937; --muted:#94a3b8;
+    --ok:#22c55e; --zoom:1; /* updated by JS */
   }
   *{ box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
-  body{ margin:0; font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:#fff; }
-  header{ padding:14px; background:#0f172a; position:sticky; top:0; z-index:5; display:flex; gap:10px; align-items:center; justify-content:space-between; }
+  body{ margin:0; background:var(--bg); color:#fff; font-family: system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  header{ position:sticky; top:0; z-index:50; background:#0f172a; padding:12px; display:flex; gap:8px; align-items:center; justify-content:space-between; }
   header h1{ margin:0; font-size:16px; font-weight:800; }
-  .wrap{ display:grid; grid-template-columns:1fr; gap:12px; padding:12px; }
-  .card{ background:var(--card); border:1px solid var(--grid); border-radius:12px; padding:12px; }
-  .title{ margin:0 0 8px 0; font-weight:800; font-size:16px; }
-  .toolbar{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-  button,select,input[type=range]{ font-size:14px; padding:10px 12px; border-radius:10px; border:1px solid #334155; background:#111827; color:#fff; }
+  button,select{ background:#111827; color:#fff; border:1px solid #334155; border-radius:10px; padding:10px 12px; font-size:14px; }
   button.primary{ background:#2563eb; border-color:#1d4ed8; }
-  .mapBox{ position:relative; height:64vh; min-height:360px; border-radius:12px; overflow:hidden; background:#0b1220; border:1px solid var(--grid); }
-  #imgBase{ position:absolute; inset:0; background-size:contain; background-position:center; background-repeat:no-repeat; opacity:.98; }
-  #imgError{ position:absolute; inset:0; display:none; align-items:center; justify-content:center; background:rgba(15,23,42,.4); font-size:14px; color:#e5e7eb; text-align:center; padding:16px; }
-  .station{ position:absolute; width:32px; height:32px; border-radius:50%; border:2px solid #fff; display:flex; align-items:center; justify-content:center; background:#22c55e; color:#000; font-weight:800; cursor:pointer; touch-action:none; }
-  .station.selected{ box-shadow:0 0 0 4px rgba(59,130,246,.4); }
-  .note{ font-size:12px; color:#cbd5e1; }
-  .grid-2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-  @media (max-width:680px){ .grid-2{ grid-template-columns:1fr; } }
+  main{ padding:12px; display:grid; gap:12px; grid-template-columns:1fr; }
+  @media (min-width: 980px){ main{ grid-template-columns:1.5fr 1fr; } }
+  .card{ background:var(--panel); border:1px solid var(--grid); border-radius:12px; padding:12px; }
+  .title{ margin:0 0 8px; font-weight:800; font-size:16px; }
+  .toolbar{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+
+  /* --- Zoom/Pan canvas --- */
+  .mapShell{ position:relative; height:70vh; min-height:360px; border-radius:12px; overflow:hidden; border:1px solid var(--grid); background:#0b1220; }
+  .mapViewport{ position:absolute; inset:0; overflow:hidden; touch-action:none; }
+  .mapWorld{ position:absolute; left:0; top:0; transform-origin: 0 0; }
+  .basemap{ display:block; width:auto; height:auto; max-width:none; user-select:none; pointer-events:none; }
+  .marker{
+    position:absolute; left:0; top:0;
+    width:32px; height:32px; border-radius:50%; border:2px solid #fff;
+    background:var(--ok); color:#000; font-weight:800; display:flex; align-items:center; justify-content:center;
+    transform: translate(-50%,-50%) scale(calc(1/var(--zoom)));
+    cursor:grab; user-select:none;
+  }
+  .marker.dragging{ opacity:.8; cursor:grabbing; }
+  .hint{ color:var(--muted); font-size:12px; }
+
   canvas{ width:100%; height:220px; border:1px solid var(--grid); border-radius:8px; background:#0b1220; }
 </style>
 </head>
@@ -35,193 +44,249 @@
 <header>
   <h1>Fox Metro — Digital Twin</h1>
   <div class="toolbar">
-    <button id="play" class="primary">▶</button>
-    <button id="pause">⏸</button>
-    <button id="restart">⟲</button>
-    <label class="note">Speed
-      <select id="speed">
-        <option value="400">1×</option>
-        <option value="250">1.5×</option>
-        <option value="150">2×</option>
-        <option value="80">4×</option>
-      </select>
-    </label>
+    <button id="btnEdit" class="primary">Enter Map Edit</button>
+    <button id="btnDone" style="display:none">Done</button>
+    <button id="btnExport">⬇ Export Layout</button>
+    <label class="hint">Import <input id="fileImport" type="file" accept=".json"></label>
+    <select id="speed">
+      <option value="400">Speed 1×</option>
+      <option value="250">1.5×</option>
+      <option value="150">2×</option>
+      <option value="80">4×</option>
+    </select>
   </div>
 </header>
 
-<div class="wrap">
-  <div class="card">
-    <h3 class="title">Basemap + Stations</h3>
-    <div class="toolbar" style="margin-bottom:8px;">
-      <label class="note">Scenario:
-        <select id="scenario">
-          <option value="dry">Dry</option>
-          <option value="moderate" selected>Moderate</option>
-          <option value="extreme">Extreme</option>
-        </select>
-      </label>
-      <label class="note">Time
-        <input id="slider" type="range" min="0" max="48" step="1" value="0" style="width:40vw; max-width:320px">
-      </label>
-      <span id="timeLabel" class="note">0 / 48</span>
+<main>
+  <section class="card">
+    <h3 class="title">Basemap (Zoom + Pan + Click-to-Place)</h3>
+    <div class="mapShell">
+      <div id="viewport" class="mapViewport">
+        <div id="world" class="mapWorld">
+          <img id="img" class="basemap" src="./basemap.png" alt="Basemap" />
+          <!-- markers injected here -->
+        </div>
+      </div>
     </div>
-    <div class="mapBox" id="map">
-      <div id="imgBase"></div>
-      <div id="imgError">Basemap failed to load.<br/>Make sure BASEMAP_URL is set to the RAW URL of your image (or the file is next to index.html).</div>
-      <!-- Stations injected here -->
-    </div>
-    <div class="note" style="margin-top:6px">Tip: drag markers to place; Export to save; Import to reload later.</div>
-    <div class="toolbar" style="margin-top:8px;">
-      <button id="export">⬇ Export Layout</button>
-      <label class="note">Import <input id="import" type="file" accept=".json"></label>
-    </div>
-  </div>
+    <p class="hint" id="editHint">Tap “Enter Map Edit” to enable: pinch/scroll to zoom, drag to pan, tap to add markers, drag markers to refine. Markers auto-resize while you zoom.</p>
+  </section>
 
-  <div class="card">
+  <section class="card">
     <h3 class="title">Telemetry & Charts</h3>
-    <div class="grid-2">
-      <div>
-        <canvas id="rain"></canvas>
-        <div class="note">Rainfall (in/hr)</div>
-      </div>
-      <div>
-        <canvas id="wetwell"></canvas>
-        <div class="note">Wet-well (ft) & Amps (overlay)</div>
-      </div>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+      <canvas id="rain"></canvas>
+      <canvas id="wet"></canvas>
     </div>
-    <div id="telemetry" class="note" style="margin-top:8px;">Tap a station (P1–P12).</div>
-  </div>
-</div>
+    <p class="hint" id="telemetry">Select a marker.</p>
+  </section>
+</main>
 
 <script>
-/* ================= CONFIG ================= */
-// 🔗 Paste the RAW URL of your image here (open IMG_8532.jpeg → “⋯” → View raw → copy link)
-const BASEMAP_URL = "https://raw.githubusercontent.com/gonz1021/FMWRD-Twin-Demo/refs/heads/main/IMG_8532.jpeg";
-// Example of what it looks like:
-// const BASEMAP_URL = "https://raw.githubusercontent.com/gonz1021/FMWRD-Twin-demo/main/IMG_8532.jpeg";
+/* =========================================================
+   CONFIG: basemap source (change if you prefer a RAW URL)
+   ========================================================= */
+const BASEMAP_URL = "https://raw.githubusercontent.com/gonz1021/FMWRD-Twin-Demo/refs/heads/main/IMG_8532.jpeg";  // put basemap.png next to index.html
 
-/* =============== Basemap loader with error ================= */
-(function loadBasemap(){
-  const imgBase = document.getElementById('imgBase');
-  const imgErr  = document.getElementById('imgError');
-  const test = new Image();
-  test.crossOrigin = "anonymous";
-  test.onload = () => { imgBase.style.backgroundImage = `url('${BASEMAP_URL}')`; imgErr.style.display='none'; };
-  test.onerror = () => { imgErr.style.display='flex'; };
-  test.src = BASEMAP_URL;
-})();
+/* =========================================================
+   ZOOM + PAN + MARKERS (no libs)
+   ========================================================= */
+const img = document.getElementById('img');
+const viewport = document.getElementById('viewport');
+const world = document.getElementById('world');
+const btnEdit = document.getElementById('btnEdit');
+const btnDone = document.getElementById('btnDone');
+const speedSel = document.getElementById('speed');
 
-/* =============== Charts utilities ================= */
-function fitCanvas(c){ const r=c.getBoundingClientRect(); const d=window.devicePixelRatio||1; c.width=Math.max(300,Math.floor(r.width*d)); c.height=Math.max(180,Math.floor(r.height*d)); }
-function plotLine(c, s, y0, y1){
-  const x=c.getContext('2d'), w=c.width,h=c.height, L=40,R=10,T=10,B=24;
-  x.clearRect(0,0,w,h); x.strokeStyle='#334155'; x.beginPath(); x.moveTo(L,T); x.lineTo(L,h-B); x.lineTo(w-R,h-B); x.stroke();
-  x.strokeStyle='#38bdf8'; x.lineWidth=2; x.beginPath();
-  for(let i=0;i<s.length;i++){ const px=L+(w-L-R)*i/(s.length-1); const py=h-B-(h-B-T)*(s[i]-y0)/(y1-y0||1); i?x.lineTo(px,py):x.moveTo(px,py); }
-  x.stroke();
+let editMode = false;
+let scale = 1;          // zoom factor
+let ox = 0, oy = 0;     // world origin translation (px)
+let draggingView = false, dragStartX = 0, dragStartY = 0, startOX=0, startOY=0;
+
+let imgW = 0, imgH = 0;
+const markers = []; // {id, xpct, ypct, el}
+
+document.documentElement.style.setProperty('--zoom', scale);
+
+/* ---- load image then size world ---- */
+img.onload = () => {
+  imgW = img.naturalWidth;
+  imgH = img.naturalHeight;
+  sizeToFit();
+  renderWorld();
+};
+img.onerror = () => alert("Basemap not found. Ensure basemap.png is in the repo root.");
+img.src = BASEMAP_URL;
+
+/* ---- helpers ---- */
+function sizeToFit(){
+  const r = viewport.getBoundingClientRect();
+  const sx = r.width / imgW;
+  const sy = r.height / imgH;
+  scale = Math.min(sx, sy);       // fit to view
+  ox = Math.max(0, (r.width - imgW*scale)/2);
+  oy = Math.max(0, (r.height - imgH*scale)/2);
+  updateZoomVar();
 }
-function plotDual(c,s1,y10,y11,s2,y20,y21){
-  const x=c.getContext('2d'), w=c.width,h=c.height, L=40,R=28,T=10,B=26;
-  x.clearRect(0,0,w,h); x.strokeStyle='#334155'; x.beginPath(); x.moveTo(L,T); x.lineTo(L,h-B); x.lineTo(w-R,h-B); x.stroke();
-  x.strokeStyle='#22c55e'; x.lineWidth=2; x.beginPath();
-  for(let i=0;i<s1.length;i++){ const px=L+(w-L-R)*i/(s1.length-1); const py=h-B-(h-B-T)*(s1[i]-y10)/(y11-y10||1); i?x.lineTo(px,py):x.moveTo(px,py); }
-  x.stroke();
-  x.strokeStyle='#7c3aed'; x.lineWidth=2; x.beginPath();
-  for(let i=0;i<s2.length;i++){ const px=L+(w-L-R)*i/(s2.length-1); const py=h-B-(h-B-T)*(s2[i]-y20)/(y21-y20||1); i?x.lineTo(px,py):x.moveTo(px,py); }
-  x.stroke();
-}
-
-/* =============== Scenario data ================= */
-const steps=49, timeHrs=Array.from({length:steps},(_,i)=>i*0.25);
-function gaussian(x,m,s){ return Math.exp(-0.5*((x-m)/s)**2); }
-function scenarioRain(k){ if(k==='dry')return timeHrs.map(_=>0); if(k==='moderate')return timeHrs.map(t=>0.8*gaussian(t,6,1.2)); if(k==='extreme')return timeHrs.map(t=>1.2*gaussian(t,5.8,1.0)+0.6*gaussian(t,8.5,0.5)); return timeHrs.map(_=>0); }
-const basinPhase={A:0,B:3,C:6,D:9};
-
-/* =============== Elements & state ================= */
-const mapEl=document.getElementById('map'), canvRain=document.getElementById('rain'), canvWet=document.getElementById('wetwell');
-const playBtn=document.getElementById('play'), pauseBtn=document.getElementById('pause'), restartBtn=document.getElementById('restart');
-const speedSel=document.getElementById('speed'), scenSel=document.getElementById('scenario'), slider=document.getElementById('slider');
-const timeLabel=document.getElementById('timeLabel');
-[canvRain,canvWet].forEach(fitCanvas); window.addEventListener('resize', ()=>[canvRain,canvWet].forEach(fitCanvas));
-
-let stations=[
-  {id:"P1",x:.12,y:.18,basin:"A"},{id:"P2",x:.28,y:.12,basin:"A"},{id:"P3",x:.45,y:.20,basin:"A"},
-  {id:"P4",x:.60,y:.28,basin:"B"},{id:"P5",x:.78,y:.34,basin:"B"},{id:"P6",x:.84,y:.52,basin:"B"},
-  {id:"P7",x:.70,y:.62,basin:"C"},{id:"P8",x:.54,y:.70,basin:"C"},{id:"P9",x:.36,y:.64,basin:"C"},
-  {id:"P10",x:.20,y:.70,basin:"D"},{id:"P11",x:.12,y:.50,basin:"D"},{id:"P12",x:.26,y:.40,basin:"D"}
-];
-let stationEls={}, selected='P1', scenario='moderate', rain=scenarioRain('moderate'), data=makeData(rain);
-let step=0, timer=null, playing=false, speed=parseInt(speedSel.value,10);
-
-/* =============== Data generator ================= */
-function makeData(r){
-  function riskSeries(phase){ return timeHrs.map((t,i)=>{ const prev=(i>phase?r[i-phase]:0); return Math.max(0,Math.min(1,1.4*r[i]+1.1*prev));});}
-  const risk={},wet={},amp={};
-  stations.forEach(s=>{ risk[s.id]=riskSeries(basinPhase[s.basin]);
-    wet[s.id]=timeHrs.map((t,i)=>4+1.5*Math.sin((t-6)/1.8)*Math.exp(-0.08*(t-6)**2)+(0.10*(Math.random()-0.5)));
-    amp[s.id]=timeHrs.map((t,i)=>18+12*risk[s.id][i]+(Math.random()-0.5)*1.0);
-  });
-  return {risk,wet,amp};
+function updateZoomVar(){ document.documentElement.style.setProperty('--zoom', scale); }
+function renderWorld(){
+  world.style.transform = `translate(${ox}px, ${oy}px) scale(${scale})`;
 }
 
-/* =============== Stations (render + drag) ================= */
-function placeStations(){
-  Array.from(mapEl.querySelectorAll('.station')).forEach(n=>n.remove()); stationEls={};
-  stations.forEach(s=>{
-    const el=document.createElement('div'); el.className='station'; el.textContent=s.id.replace('P','');
-    el.style.left=`calc(${s.x*100}% - 16px)`; el.style.top=`calc(${s.y*100}% - 16px)`;
-    el.addEventListener('click',()=>selectStation(s.id));
-    // drag
-    let dragging=false, offX=0, offY=0;
-    function start(cx,cy){ dragging=true; Object.values(stationEls).forEach(e=>e.classList.remove('selected')); el.classList.add('selected'); const r=el.getBoundingClientRect(); offX=cx-r.left; offY=cy-r.top; }
-    function move(cx,cy){ if(!dragging)return; const rect=mapEl.getBoundingClientRect(); let x=Math.max(16,Math.min(cx-rect.left-offX+16,mapEl.clientWidth-16)); let y=Math.max(16,Math.min(cy-rect.top-offY+16,mapEl.clientHeight-16)); el.style.left=(x-16)+'px'; el.style.top=(y-16)+'px'; s.x=x/mapEl.clientWidth; s.y=y/mapEl.clientHeight; }
-    function end(){ dragging=false; }
-    el.addEventListener('mousedown',e=>{start(e.clientX,e.clientY); e.preventDefault();});
-    window.addEventListener('mousemove',e=>move(e.clientX,e.clientY)); window.addEventListener('mouseup',end);
-    el.addEventListener('touchstart',e=>{const t=e.changedTouches[0]; start(t.clientX,t.clientY);});
-    window.addEventListener('touchmove',e=>{const t=e.changedTouches?.[0]; if(t) move(t.clientX,t.clientY);},{passive:false});
-    window.addEventListener('touchend',end);
-    mapEl.appendChild(el); stationEls[s.id]=el;
-  });
-}
-function selectStation(id){ selected=id; Object.values(stationEls).forEach(e=>e.classList.remove('selected')); stationEls[id].classList.add('selected'); update(step); }
-
-/* =============== Update/Playback ================= */
-function update(idx){
-  timeLabel.textContent = idx + " / " + (steps-1);
-  stations.forEach(s=>{ stationEls[s.id].style.background = colorForRisk(data.risk[s.id][idx]); });
-  plotLine(canvRain, rain.slice(0,idx+1), 0, Math.max(...rain)*1.1||1);
-  const wet=data.wet[selected], amp=data.amp[selected];
-  const ymin2=Math.min(...amp)-2, ymax2=Math.max(...amp)+2;
-  plotDual(canvWet, wet.slice(0,idx+1), 3.4, 6.8, amp.slice(0,idx+1), ymin2, ymax2);
-  document.getElementById('telemetry').textContent =
-    `${selected} | Wet-well ${wet[idx].toFixed(2)} ft | Amps ${amp[idx].toFixed(1)} | Risk ${data.risk[selected][idx].toFixed(2)}`;
-}
-function colorForRisk(r){ if(r>=0.7) return 'var(--bad)'; if(r>=0.35) return 'var(--warn)'; return 'var(--ok)'; }
-function play(){ if(playing) return; playing=true; playBtn.disabled=true; pauseBtn.disabled=false; timer=setInterval(()=>{ if(step>=steps-1){pause();return;} step++; slider.value=step; update(step); }, speed); }
-function pause(){ playing=false; playBtn.disabled=false; pauseBtn.disabled=true; if(timer){clearInterval(timer); timer=null;} }
-function restart(){ pause(); step=0; slider.value=0; update(0); }
-
-/* =============== Import/Export ================= */
-document.getElementById('export').addEventListener('click', ()=>{
-  const blob=new Blob([JSON.stringify(stations,null,2)],{type:'application/json'}); const url=URL.createObjectURL(blob);
-  const a=document.createElement('a'); a.href=url; a.download='station_layout.json'; a.click(); URL.revokeObjectURL(url);
+/* ---- zoom (wheel & pinch) ---- */
+viewport.addEventListener('wheel', (e)=>{
+  if(!editMode) return;
+  e.preventDefault();
+  const rect = viewport.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+  zoomAbout(mx, my, e.deltaY<0 ? 1.1 : 1/1.1);
 });
-document.getElementById('import').addEventListener('change', e=>{
+let pinch=false, startD=0, startScale=1, pinchCenter={x:0,y:0};
+viewport.addEventListener('touchstart', (e)=>{
+  if(!editMode) return;
+  if(e.touches.length===2){
+    pinch=true;
+    startD = dist(e.touches[0], e.touches[1]);
+    startScale = scale;
+    const rect = viewport.getBoundingClientRect();
+    pinchCenter = {
+      x:(e.touches[0].clientX+e.touches[1].clientX)/2 - rect.left,
+      y:(e.touches[0].clientY+e.touches[1].clientY)/2 - rect.top
+    };
+  } else if(e.touches.length===1){
+    beginDrag(e.touches[0].clientX, e.touches[0].clientY);
+  }
+},{passive:false});
+viewport.addEventListener('touchmove', (e)=>{
+  if(!editMode) return;
+  if(pinch && e.touches.length===2){
+    e.preventDefault();
+    const d = dist(e.touches[0], e.touches[1]);
+    const f = d/startD;
+    scale = clamp(startScale*f, 0.2, 6);
+    zoomAbout(pinchCenter.x, pinchCenter.y, 1, true); // recalc translation only
+  } else if(draggingView && e.touches.length===1){
+    drag(e.touches[0].clientX, e.touches[0].clientY);
+  }
+},{passive:false});
+viewport.addEventListener('touchend', ()=>{ pinch=false; endDrag(); });
+
+function dist(a,b){ return Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY); }
+function clamp(v,min,max){ return Math.max(min, Math.min(max, v)); }
+
+function zoomAbout(mx, my, factor, absolute=false){
+  const wx = (mx - ox) / scale; // world coords
+  const wy = (my - oy) / scale;
+  if(!absolute){ scale = clamp(scale*factor, 0.2, 6); }
+  ox = mx - wx*scale;
+  oy = my - wy*scale;
+  updateZoomVar();
+  renderWorld();
+}
+
+/* ---- pan ---- */
+viewport.addEventListener('mousedown', (e)=>{ if(!editMode) return; beginDrag(e.clientX, e.clientY); });
+window.addEventListener('mousemove', (e)=>{ if(!editMode) return; drag(e.clientX, e.clientY); });
+window.addEventListener('mouseup', endDrag);
+function beginDrag(x,y){ draggingView=true; dragStartX=x; dragStartY=y; startOX=ox; startOY=oy; }
+function drag(x,y){ if(!draggingView) return; ox = startOX + (x-dragStartX); oy = startOY + (y-dragStartY); renderWorld(); }
+function endDrag(){ draggingView=false; }
+
+/* ---- click to add marker (edit mode) ---- */
+viewport.addEventListener('click', (e)=>{
+  if(!editMode) return;
+  // ignore if click ended on an existing marker drag
+  if(e.target.classList.contains('marker')) return;
+
+  const rect = viewport.getBoundingClientRect();
+  const vx = e.clientX - rect.left;
+  const vy = e.clientY - rect.top;
+  const wx = (vx - ox) / scale;      // world (image px)
+  const wy = (vy - oy) / scale;
+
+  const xpct = wx / imgW;
+  const ypct = wy / imgH;
+  const id = "P" + (markers.length+1);
+  addMarker({id, xpct, ypct});
+});
+
+/* ---- markers ---- */
+function addMarker({id, xpct, ypct}){
+  const el = document.createElement('div');
+  el.className='marker';
+  el.textContent = id.replace('P','');
+  world.appendChild(el);
+  const m = {id, xpct, ypct, el}; markers.push(m);
+  positionMarker(m);
+  // drag marker
+  let dragM=false, sx=0, sy=0, startXP=0, startYP=0;
+  el.addEventListener('mousedown', (e)=>{ if(!editMode) return; e.stopPropagation(); dragM=true; el.classList.add('dragging'); sx=e.clientX; sy=e.clientY; startXP=m.xpct; startYP=m.ypct; });
+  window.addEventListener('mousemove', (e)=>{ if(!dragM) return; const dx=(e.clientX-sx)/scale, dy=(e.clientY-sy)/scale; m.xpct = clamp(startXP + dx/imgW, 0, 1); m.ypct = clamp(startYP + dy/imgH, 0, 1); positionMarker(m); });
+  window.addEventListener('mouseup', ()=>{ if(dragM){ dragM=false; el.classList.remove('dragging'); }});
+  // touch
+  el.addEventListener('touchstart', (e)=>{ if(!editMode) return; e.stopPropagation(); const t=e.changedTouches[0]; dragM=true; el.classList.add('dragging'); sx=t.clientX; sy=t.clientY; startXP=m.xpct; startYP=m.ypct; }, {passive:false});
+  window.addEventListener('touchmove', (e)=>{ if(!dragM) return; const t=e.changedTouches?.[0]; if(!t) return; const dx=(t.clientX-sx)/scale, dy=(t.clientY-sy)/scale; m.xpct = clamp(startXP + dx/imgW, 0, 1); m.ypct = clamp(startYP + dy/imgH, 0, 1); positionMarker(m); }, {passive:false});
+  window.addEventListener('touchend', ()=>{ if(dragM){ dragM=false; el.classList.remove('dragging'); }});
+}
+function positionMarker(m){
+  const x = m.xpct * imgW;
+  const y = m.ypct * imgH;
+  m.el.style.left = x + 'px';
+  m.el.style.top  = y + 'px';
+}
+
+/* ---- edit/done ---- */
+btnEdit.addEventListener('click', ()=>{
+  editMode = true;
+  btnEdit.style.display='none';
+  btnDone.style.display='inline-block';
+  document.getElementById('editHint').textContent = "Edit mode ON — click to add, drag markers, pinch/scroll to zoom, drag to pan. Tap Done when finished.";
+});
+btnDone.addEventListener('click', ()=>{
+  editMode = false;
+  btnEdit.style.display='inline-block';
+  btnDone.style.display='none';
+  document.getElementById('editHint').textContent = "Edit mode OFF — use controls & charts.";
+});
+
+/* ---- export/import (% coords) ---- */
+document.getElementById('btnExport').addEventListener('click', ()=>{
+  const payload = markers.map(m=>({id:m.id, xpct:m.xpct, ypct:m.ypct}));
+  const blob = new Blob([JSON.stringify(payload,null,2)], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='station_layout.json'; a.click();
+  URL.revokeObjectURL(url);
+});
+document.getElementById('fileImport').addEventListener('change', (e)=>{
   const f=e.target.files[0]; if(!f) return; const r=new FileReader();
-  r.onload=ev=>{ try{ const arr=JSON.parse(ev.target.result); const next=Array.isArray(arr)?arr:(arr.stations||[]); next.forEach(o=>{const s=stations.find(z=>z.id===o.id); if(s){ s.x=o.x??s.x; s.y=o.y??s.y; s.basin=o.basin??s.basin; }}); placeStations(); update(step);}catch{ alert('Invalid JSON'); } };
+  r.onload = ev => {
+    try{
+      const arr = JSON.parse(ev.target.result);
+      // remove existing
+      markers.splice(0, markers.length);
+      Array.from(world.querySelectorAll('.marker')).forEach(n=>n.remove());
+      (arr||[]).forEach(o=> addMarker({id:o.id||("P?"), xpct:o.xpct, ypct:o.ypct}));
+    }catch{ alert('Invalid JSON'); }
+  };
   r.readAsText(f);
 });
 
-/* =============== Wire & init ================= */
-playBtn.addEventListener('click', play);
-pauseBtn.addEventListener('click', pause);
-restartBtn.addEventListener('click', restart);
-speedSel.addEventListener('change', ()=>{ speed=parseInt(speedSel.value,10); if(playing){ pause(); play(); } });
-scenSel.addEventListener('change', ()=>{ const k=scenSel.value; rain=scenarioRain(k); data=makeData(rain); step=0; slider.value=0; update(0); });
-slider.addEventListener('input', e=>{ step=parseInt(e.target.value,10); update(step); });
+/* =========================================================
+   (Optional) quick mock charts — just to keep the page intact
+   ========================================================= */
+const rain = document.getElementById('rain');
+const wet  = document.getElementById('wet');
+[rain,wet].forEach(c=>{
+  const r=c.getBoundingClientRect(), d=window.devicePixelRatio||1;
+  c.width=Math.floor(r.width*d); c.height=220*d;
+  const x=c.getContext('2d'); x.strokeStyle='#334155'; x.strokeRect(10,10,c.width-20,c.height-20);
+  x.fillStyle='#94a3b8'; x.fillText('Charts placeholder', 20*d, 30*d);
+});
+window.addEventListener('resize', ()=>[rain,wet].forEach(c=>{
+  const r=c.getBoundingClientRect(), d=window.devicePixelRatio||1;
+  c.width=Math.floor(r.width*d); c.height=220*d;
+}));
 
-placeStations(); update(0);
 </script>
 </body>
 </html>
